@@ -76,21 +76,7 @@ ABFS_BASE_PATH = (
     f"abfss://{LH_WORKSPACE_NAME}@onelake.dfs.fabric.microsoft.com/"
     f"{BRONZE_LH_NAME}.Lakehouse/Tables/dbo/"
 )
-'''
-GITHUB_SCHEMA = "github"
-META_SCHEMA = "meta"
 
-REPOS_TABLE = "gh_repositories"
-COMMITS_TABLE = "gh_commits"
-WATERMARKS_TABLE = "_load_watermarks"
-
-REPOS_PATH = f"{BRONZE_BASE_PATH}{GITHUB_SCHEMA}/{REPOS_TABLE}"
-COMMITS_PATH = f"{BRONZE_BASE_PATH}{GITHUB_SCHEMA}/{COMMITS_TABLE}"
-WATERMARKS_PATH = f"{BRONZE_BASE_PATH}{META_SCHEMA}/{WATERMARKS_TABLE}"
-
-spark.sql(f"CREATE SCHEMA IF NOT EXISTS {GITHUB_SCHEMA}")
-spark.sql(f"CREATE SCHEMA IF NOT EXISTS {META_SCHEMA}")
-'''
 print(f"Github org:           {GITHUB_ORG}")
 print(f"Bronze base:   {ABFS_BASE_PATH}")
 
@@ -463,19 +449,12 @@ repo_rows = [flatten_repo(r, extraction_timestamp) for r in raw_repos]
 # META   "language_group": "synapse_pyspark"
 # META }
 
-# CELL ********************
+# MARKDOWN ********************
 
-#### Step 2: Load Repositories into Bronze Lakehouse
-We create a Spark Data frame from the flattened repository data and MERGE it into the gh_repositories Delta table. The merge key is the
-GitHub Repo id which is immutable
-Existing rows are updated, new repos are inserted
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
+# #### Step 2: Load Repositories into Bronze Lakehouse
+# We create a Spark Data frame from the flattened repository data and MERGE it into the gh_repositories Delta table. The merge key is the
+# GitHub Repo id which is immutable
+# Existing rows are updated, new repos are inserted
 
 # CELL ********************
 
