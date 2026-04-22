@@ -1,260 +1,269 @@
 ---
-name: extract-and-load-restapi
-description: End-to-end workflow for extracting data from a REST API and loading it into a Fabric Bronze Lakehouse as Delta tables. Use when the user asks to pull data from a REST API into Fabric (GitHub, Jira, Salesforce, etc.), build a new source-to-Bronze pipeline, or scaffold a Fabric PySpark notebook that calls an HTTP API. Drives the full process: requirements interrogation → API research → extraction-flow design → notebook build → test & verification → documentation.
+name: rest-api-extraction-fabric
+description: "Use this skill whenever the task involves extracting data from a REST API and loading it into a Microsoft Fabric Lakehouse (Bronze layer). Triggers include: building Fabric notebooks for API ingestion, paginated REST API calls, Delta MERGE writes to OneLake, watermark-based incremental loads, Key Vault credential retrieval, Variable Library configuration, and ABFS path construction. Also use when the user asks to set up an extraction pipeline from GitHub, Jira, SharePoint, or any other REST API into Fabric."
 ---
 
-# Skill: Extract & Load from a REST API into Fabric Bronze
+# REST API Extraction to Microsoft Fabric Lakehouse
 
-This skill encapsulates the full workflow the repo uses for building a
-REST-API → Bronze-Lakehouse extraction in Microsoft Fabric. Do **not**
-jump to code. Walk through the phases below and the user will get a
-predictable, documented, multi-environment, idempotent notebook.
+## Overview
 
-## Authoritative references (read these first)
+This skill encapsulates a complete, professional workflow for extracting data from any REST API and loading it into a Microsoft Fabric Lakehouse. It is grounded in two resource documents that **must** be read at the start of every invocation:
 
-The two framework documents in `.claude/resources/` are the source of
-truth. Read both before acting — they contain conventions this skill
-assumes.
+| Resource | Path | Purpose |
+|---|---|---|
+| Fabric Notebook Coding Guide | `.claude/resources/fabric-notebook-coding-guide.md` | Defines notebook file format, cell delimiters, metadata blocks, security patterns, Variable Libraries, ABFS paths, Delta MERGE, helper function style, and coding conventions |
+| REST API Extraction Framework | `.claude/resources/restapi-extraction-framework.md` | 8-step methodology: requirements, API research, Postman testing, flow planning, build, test/reinforce, document, monitor |
 
-1. `.claude/resources/restapi-extraction-framework.md`
-   — the **8-step framework** (requirements → API research → Postman
-   → flow design → build → test → document → monitor).
-2. `.claude/resources/fabric-notebook-coding-guide.md`
-   — Fabric git-integration source format, kernel/metadata rules,
-   Variable Library usage, AKV pattern, ABFS path construction,
-   Delta MERGE conventions, helper-function and docstring style.
-3. `CLAUDE.md` at the repo root
-   — repo-specific warnings (do not hand-edit `.platform` GUIDs,
-   preserve cell delimiters, `dependencies.lakehouse` GUIDs are
-   environment-specific, etc.).
-
-When you produce artifacts, cite which rule from these documents you
-are applying. That both teaches the user and keeps you honest.
+**Before doing anything else**, read both files in full. They are your source of truth for how code should be written and how the project should be run.
 
 ---
 
-## Workflow
+## Phase 1: Research & Requirements (Framework Steps 1-2)
 
-### Phase 1 — Play the consultant (framework Step 1)
+> Reference: `restapi-extraction-framework.md` Steps 1 and 2
 
-Enter **plan mode** before writing anything. Use `AskUserQuestion` to
-interrogate requirements rather than guessing. Never assume — ask. At
-minimum cover:
+You are acting as a consultant. Your job is to ask the right questions before writing a single line of code. Use `AskUserQuestion` to gather requirements interactively.
 
-- **Lesson / notebook code** — naming slot (e.g. `DE00X`).
-- **Target entities / endpoints** — which resources? which fields?
-- **Scope** — single record, single repo/project, an org, a tenant?
-- **Auth** — PAT in AKV (default), OAuth client credentials, service
-  principal, API key?
-- **Target lakehouse** — which Bronze LH? schemas enabled? which
-  schema? watermark/control tables go in a separate `meta` schema.
-- **Load mode** — full refresh, incremental via `since`/watermark,
-  CDC, append-only?
-- **Variable Library** — confirm that every environment-specific
-  value goes into the Variable Library so the notebook is
-  DEV/TEST/PROD-portable.
-- **Pre-reqs to produce instructions for** — PAT creation, AKV
-  secret creation, Variable Library key list.
+### Questions to ask the client
 
-Iterate. Expect the user to refine the plan 2–4 times. Each
-iteration, rewrite the plan file with the new decisions; don't patch
-by hand. The plan file is the single source of truth you'll exit
-plan mode with.
+**Data scope:**
+- Which entities/tables does the business need from this API? (e.g. for GitHub: repos, commits, issues, PRs)
+- Warn them: "the more tables, the longer the development time" — but also don't be too lean (rework is expensive)
 
-**Professional-advice framing:** when you present trade-offs
-(e.g. full vs incremental, metadata-driven vs hard-coded), state the
-recommendation first with a one-line "why", then the alternatives.
-This mirrors the "play the consultant" tone of the framework Step 1.
+**Naming & placement:**
+- Which lesson/course code should this use? (e.g. DE002, DE005)
+- Should we create a new notebook or use an existing one?
+- Should we create a new Lakehouse or use an existing one?
 
-### Phase 2 — API research (framework Step 2)
+**Environment & config:**
+- Should we use Variable Libraries for DEV/TEST/PROD portability? (recommend yes)
+- Is there an existing Variable Library, or do we need to define one?
 
-Before designing the flow:
+**Authentication:**
+- Is the API key / token already stored in Azure Key Vault?
+- If not, provide setup instructions (see Phase 2 deliverables below)
 
-- Link the official API docs in the plan.
-- Confirm auth mechanism and required headers
-  (e.g. `Authorization`, `Accept`, `X-*-Api-Version`, `User-Agent`).
-- Identify rate limits and the headers that expose them
-  (e.g. `X-RateLimit-Remaining`, `Retry-After`).
-- For each target entity: endpoint, pagination mechanism
-  (`Link rel="next"`, cursor, offset), incremental mechanism
-  (`since`, `updated_at`, ETag).
-- Capture one sample payload shape per entity to drive the explicit
-  `StructType` projection.
+**Load strategy:**
+- Does the API support incremental extraction (e.g. `since`, `updated_after` params)?
+- Which entities should be incremental vs full refresh?
 
-Postman testing (framework Step 3) is the user's job; remind them
-it's the fastest way to verify auth and to keep a reusable
-request-by-request debug collection.
+**API constraints:**
+- Are there rate limits? Pagination requirements?
+- Are there nested endpoints (e.g. must fetch projects, then tasks per project)?
 
-### Phase 3 — Design the extraction flow (framework Step 4)
+### Deliverables from Phase 1
 
-Put an ASCII flow diagram in the plan file, phase by phase. Example
-shape:
+- A clear list of entities to extract and key columns for each
+- The notebook name, Lakehouse name, and lesson code
+- A decision on Variable Libraries and Key Vault configuration
+- A go/no-go decision: can the API satisfy the requirements?
+
+---
+
+## Phase 2: API Documentation & Auth Setup (Framework Step 3)
+
+> Reference: `restapi-extraction-framework.md` Steps 2 and 3
+
+### Research the API
+
+Use `WebFetch` or `WebSearch` to find and read the API documentation. Answer:
+
+1. **Authentication method**: API key, OAuth, PAT, client credentials?
+2. **Endpoints needed**: Which endpoints return the required data? What params/headers do they need?
+3. **Response structure**: What does the JSON response look like? Which fields to extract?
+4. **Pagination**: Link header? Cursor-based? Offset? Page number?
+5. **Rate limits**: Requests per hour/minute? How are limits communicated (headers)?
+6. **Incremental support**: Does the API accept `since`, `updated_after`, or similar filters?
+
+### Provide auth setup instructions
+
+If the client needs to create credentials, provide step-by-step instructions:
+
+1. How to generate the API key/token in the source system
+2. How to store it in Azure Key Vault:
+   - Create (or navigate to) a Key Vault in Azure Portal
+   - Create a secret with a descriptive name
+   - Grant the Fabric workspace identity the **Key Vault Secrets User** role
+   - Record the vault URI
+3. What variables to add to the Variable Library
+
+### Provide Variable Library specification
+
+Define the exact variables needed. Always include at minimum:
+
+| Variable | Purpose |
+|---|---|
+| `BRONZE_LH_NAME` | Target Lakehouse name |
+| `LH_WORKSPACE_NAME` | Workspace name for ABFS path construction |
+| `AKV_URL` | Azure Key Vault URL |
+| `AKV_SECRET_NAME` | Secret name for the API credential |
+| Any API-specific config | e.g. `GITHUB_ORG`, `JIRA_DOMAIN`, etc. |
+
+---
+
+## Phase 3: Plan the Extraction Flow (Framework Step 4)
+
+> Reference: `restapi-extraction-framework.md` Step 4
+
+Before writing code, design the extraction flow as visual pseudocode. Present it to the client for review. This serves as both a development guide and documentation.
+
+### Flow diagram format
+
+Use an ASCII flow diagram showing the sequential steps:
 
 ```
-[Variable Library] → [PAT from AKV] → [ABFS base path]
-── PHASE 1: full-refresh entity ─────────────────────────
-  [GET listing] → paginate → flatten → [MERGE on key]
-── PHASE 2: incremental entity ──────────────────────────
-  [Read watermark] → per-parent GET with since → MERGE on key
-  → [Update watermark]
-[Verification & summary]
+[Load config] → [Get API token from Key Vault] → [Build ABFS paths]
+    ↓
+== ENTITY 1 (full/incremental) ==
+    ↓
+[API call with pagination] → [Flatten JSON] → [Spark DF] → [MERGE into Delta]
+    ↓
+== ENTITY 2 (full/incremental) ==
+    ↓
+[Read watermark] → [API call with since param] → [Flatten] → [MERGE]
+    ↓
+[Update watermarks] → [Verification]
 ```
 
-Decide watermark storage up front: a dedicated
-`meta._load_watermarks` Delta table (not Delta metadata),
-keyed by `entity_name`, upserted via MERGE only after a successful
-load. Watermark advances on success only.
+### Key decisions to document in the flow
 
-### Phase 4 — Build (framework Step 5)
-
-Produce two files under `<Track>/<Code>_<Name>.Notebook/`:
-
-1. `.platform` — `{"type":"Notebook","displayName":"…"}` with a
-   **freshly generated GUID** in `config.logicalId`. Never reuse a
-   GUID from another notebook (`CLAUDE.md`).
-2. `notebook-content.py` — Fabric git-integration source format,
-   kernel `synapse_pyspark`. Every `# CELL` is followed by a
-   `# METADATA` block with `"language": "python"` and
-   `"language_group": "synapse_pyspark"`. Markdown cells get **no**
-   METADATA block. Preserve the exact delimiter lines (coding
-   guide §1).
-
-Cell layout (this shape has worked well and should be the default
-— adjust per user's structure if they specify one):
-
-1. Title markdown with TOC + pre-req checklist.
-2. Step 0 — Setup: imports (`notebookutils` first), Variable
-   Library, AKV token fetch, `ENTITIES` metadata dict,
-   explicit `StructType` schemas, helpers.
-3. Step 1..N — one markdown heading + one code cell per phase.
-4. Final verification step: row counts, sample rows, watermark dump.
-
-Required helpers (name them consistently across projects):
-
-- `get_<system>_token()` — AKV lookup, only place secrets live.
-- `build_headers(token)` — all static headers.
-- `fetch_paginated(url, params)` — pagination + rate-limit handling.
-- `flatten_<entity>(payload, extracted_at)` — Python-side JSON →
-  flat dict projection (cleaner than Spark for deeply nested JSON
-  at Bronze scale).
-- `merge_to_delta(df, path, merge_key, table_fqn)` — first-write
-  `save` + `CREATE TABLE IF NOT EXISTS … USING DELTA LOCATION '…'`,
-  then `spark.sql(""" MERGE INTO … USING <tempview> ON … WHEN
-  MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT * """)`.
-  Use the `spark.sql(""" … """)` style throughout, not the
-  `DeltaTable.forPath(...).merge(...)` Python builder.
-- `get_watermark(entity)` / `set_watermark(entity, ts)` — against
-  `meta._load_watermarks`.
-
-Conventions that are not negotiable (from the coding guide):
-
-- All env values come from the Variable Library — no hardcoded
-  workspace/lakehouse/AKV/API URLs.
-- Secrets only via `notebookutils.credentials.getSecret` — never
-  print, log, or persist the token.
-- ABFS paths constructed from variables; schema-enabled lakehouses
-  use `Tables/{schema}/{table}`.
-- Explicit `StructType` on all writes (no schema inference at
-  Bronze).
-- Timestamps from the API stored as **STRING** in Bronze
-  ("store as received"); Silver parses to `TIMESTAMP`.
-- Idempotent by design: MERGE on stable natural keys; re-running
-  is a no-op when upstream hasn't changed.
-
-### Phase 5 — Test & verify (framework Step 6)
-
-These notebooks cannot run on the dev machine. Verification happens
-in Fabric, and the skill should *always* produce a verification
-checklist in the plan and repeat it when handing off. Minimum set:
-
-1. **Bootstrap check** — pre-reqs done, notebook attached to the
-   target lakehouse, Variable Library bound to DEV.
-2. **First run (cold)** — tables created; row counts match the
-   source UI; watermark row exists.
-3. **Second run (warm, no upstream change)** — "Incremental mode"
-   message; zero or near-zero new rows; idempotent MERGE; watermark
-   advances.
-4. **Change detection** — make an upstream change, re-run, confirm
-   the change lands and `_extracted_at` is newer.
-5. **Full-refresh path** (if supported by parameters) — force full
-   refresh; values unchanged on existing rows (idempotency).
-6. **Back-fill / override watermark** — if the parameters cell
-   exposes `override_watermark_*`, exercise it.
-7. **Negative tests**:
-   - bad secret name → clean Key Vault error at Step 0, no writes;
-   - bad org / bad target → clean HTTP 404, existing data
-     untouched;
-   - rate-limit handling triggers sleep, not crash.
-8. **Multi-env sanity** — switch Variable Library to TEST, rerun,
-   writes land in TEST without code changes.
-
-### Phase 6 — Document (framework Step 7)
-
-The deliverable is itself documentation when it follows the coding
-guide (title markdown with TOC, pre-reqs, embedded rationale in
-Step 0 markdown, inline docstrings). On top of that:
-
-- Keep the plan file (`~/.claude/plans/<slug>.md`) as the design
-  artifact — it holds the flow diagram, decisions log, helper
-  inventory, schema, verification checklist.
-- Commit the plan alongside the notebook so the "why" isn't lost.
-- Remind the user: if they built a Postman collection during
-  Step 3, share it with the team — it's the fastest debug tool when
-  the pipeline breaks later.
-
-### Phase 7 — Monitor (framework Step 8, out of scope)
-
-Call this out explicitly in the plan's "Out of scope" section.
-Production monitoring, Admin-Lakehouse execution logging, retry
-orchestration, unit tests around the flatten/merge helpers — note
-these as future work so the user knows what's not covered.
+- Which entities are full refresh vs incremental (and why)
+- How pagination is handled
+- How rate limits are respected
+- How errors (4xx, 5xx) are handled per endpoint
+- Where the watermark table lives and what schema it uses
 
 ---
 
-## Communication style (how to collaborate during the build)
+## Phase 4: Build the Notebook (Framework Step 5)
 
-The prior run established these behaviours — keep them:
+> Reference: `fabric-notebook-coding-guide.md` for ALL coding conventions
 
-- **Ask, don't assume.** Use `AskUserQuestion` for every
-  consequential choice (lesson code, scope, auth method, target
-  lakehouse, load mode). Bundle questions (≤ 4 per call) and lead
-  each with a recommended option + one-line rationale.
-- **State the recommendation first.** Users want a default they can
-  accept or redirect; they don't want a neutral list of options.
-- **Surface trade-offs plainly** — e.g. "full vs incremental",
-  "metadata dict vs hard-coded entity", "DeltaTable API vs
-  `spark.sql`". Don't hide behind "it depends".
-- **Rewrite the plan file each iteration.** Don't hand-patch it as
-  the conversation evolves — it's the single source of truth and
-  stays readable only if it's regenerated cleanly.
-- **Exit plan mode before implementing.** Use `ExitPlanMode` only
-  when the plan file reflects the latest decisions; don't ask for
-  approval in prose.
-- **When the user's message is garbled/truncated, ask.** Don't
-  guess what they meant.
+### Notebook file structure
+
+Every Fabric notebook is a directory:
+
+```
+{NotebookName}.Notebook/
+├── .platform          (JSON: type, displayName, logicalId)
+└── notebook-content.py (all code, markdown, metadata)
+```
+
+### Cell format rules (non-negotiable)
+
+These rules come directly from `fabric-notebook-coding-guide.md`:
+
+- File starts with `# Fabric notebook source` then a file-level `# METADATA` block
+- `# MARKDOWN` cells are NEVER followed by a `# METADATA` block
+- `# CELL` (code) cells are ALWAYS followed by a `# METADATA` block
+- Use `synapse_pyspark` for PySpark notebooks
+- Use `####` for step headings in markdown cells
+
+### Notebook structure pattern
+
+Follow this layout exactly:
+
+| Cell | Type | Content |
+|---|---|---|
+| 0 | markdown | Title: notebook name, description, table of contents |
+| 1 | markdown | Step 0 heading |
+| 2 | code | Imports (notebookutils first, one per line) |
+| 3 | code | Load Variable Library, construct ABFS base path |
+| 4 | code | Retrieve API credential from Key Vault |
+| 5 | code | ENTITIES metadata dict + Spark StructType schemas |
+| 6 | code | All helper functions |
+| N | markdown + code | Step 1..N: Extract entity, Load entity (one pair per entity) |
+| N+1 | markdown + code | Update watermarks |
+| N+2 | markdown + code | Verification and summary |
+
+### Coding conventions checklist
+
+From `fabric-notebook-coding-guide.md`:
+
+- [ ] **Variable Library**: loaded once in Step 0, accessed via `variables.PROPERTY_NAME`
+- [ ] **Secrets**: always from Key Vault via `notebookutils.credentials.getSecret()`
+- [ ] **ABFS paths**: constructed dynamically from variables, never hardcoded
+- [ ] **ABFS path must include schema folder**: e.g. `Tables/dbo/` not just `Tables/`
+- [ ] **Delta writes**: always MERGE for idempotency (`DeltaTable.isDeltaTable` check first)
+- [ ] **Metadata-driven**: entity config in a Python dict (ENTITIES), easy to extend
+- [ ] **Helper functions**: defined in Step 0, Google-style docstrings, single-purpose
+- [ ] **Markdown cells**: before every step, explain the "why" not the "what"
+- [ ] **Naming**: `snake_case` for variables/functions, `UPPER_CASE` for constants
+
+### Helper function patterns
+
+Every extraction notebook needs these reusable functions:
+
+1. `build_headers()` — Construct auth + content-type headers
+2. `fetch_paginated(url, params)` — Handle pagination + rate limits automatically
+3. `flatten_{entity}(raw, timestamp)` — Extract fields from nested JSON, add `_extracted_at`
+4. `merge_to_delta(df, path, merge_key)` — Idempotent write (initial save or MERGE)
+5. `get_watermark(entity_name)` — Read last-loaded timestamp from watermark table
+6. `set_watermark(entity_name, timestamp)` — Upsert watermark after successful load
+
+### ABFS path construction
+
+```python
+ABFS_BASE_PATH = f"abfss://{LH_WORKSPACE_NAME}@onelake.dfs.fabric.microsoft.com/{BRONZE_LH_NAME}.Lakehouse/Tables/dbo/"
+```
+
+Always include the schema folder (`dbo/`, `meta/`, etc.) in the path. Without it, Fabric Lakehouses with schemas enabled will misinterpret the table folder as a schema name.
+
+### Delta MERGE pattern
+
+```python
+if DeltaTable.isDeltaTable(spark, path):
+    delta_table = DeltaTable.forPath(spark, path)
+    (
+        delta_table.alias("target")
+        .merge(df.alias("source"), f"target.{merge_key} = source.{merge_key}")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+else:
+    df.write.format("delta").save(path)
+```
+
+### Incremental load pattern
+
+```python
+watermark = get_watermark("entity_name")
+params = {}
+if watermark:
+    params["since"] = watermark   # or updated_after, etc.
+
+raw_data = fetch_paginated(url, params=params)
+# ... flatten, merge ...
+set_watermark("entity_name", extraction_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ"))
+```
 
 ---
 
-## Deliverables checklist
+## Phase 5: Test, Reinforce & Document (Framework Steps 6-8)
 
-When the workflow is complete you should have produced:
+> Reference: `restapi-extraction-framework.md` Steps 6-8
 
-- [ ] Plan file at `~/.claude/plans/<slug>.md` with context,
-      decisions, pre-reqs, Variable Library table, flow diagram,
-      cell structure, helper inventory, schema, verification
-      checklist, out-of-scope list.
-- [ ] New notebook folder `<Track>/<Code>_<Name>.Notebook/`
-      containing:
-  - [ ] `.platform` with a fresh `logicalId` GUID and correct
-        `displayName`.
-  - [ ] `notebook-content.py` in Fabric git-integration source
-        format: kernel header, title markdown, Step 0 setup, one
-        step per phase, final verification step. Every code cell
-        has its METADATA block. No secrets, no hardcoded env
-        values.
-- [ ] A verification plan the user can run in Fabric after Git
-      Integration sync.
-- [ ] Explicit "Out of scope" note covering framework Step 8
-      (monitoring) and anything else deferred.
+### Testing checklist
 
-If any item is missing, the workflow is not done.
+- [ ] Run full load end-to-end, verify row counts
+- [ ] Run incremental load — confirm only new records are fetched
+- [ ] Simulate rate limit — confirm backoff/sleep logic activates
+- [ ] Simulate 404/409 on empty repo/entity — confirm it is skipped gracefully
+- [ ] Rerun idempotency test — confirm no duplicates in Delta tables
+- [ ] Verify watermark table is updated correctly after each run
+
+### Documentation to add to notebook
+
+Add a markdown cell at the top with:
+- What this notebook does and why
+- Source API and authentication method
+- Entities extracted and their merge keys
+- Load strategy per entity (full vs incremental)
+- Known limitations or caveats
+
+### Monitoring reminders
+
+- Schedule the notebook via Fabric Data Factory pipeline
+- Set alerts on pipeline failure
+- Periodically review watermark table to confirm incremental loads are progressing
