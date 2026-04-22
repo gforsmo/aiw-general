@@ -12,10 +12,8 @@
 # MARKDOWN ********************
 
 # #### DE002 - GitHub Extraction to Bronze
-#
 # > Extracts Repositories and Commits from a GitHub organization via the
 # > REST API and lands them in `DE002_Lakehouse` as Delta tables.
-#
 # #### In this notebook:
 # - Step 0: Setup - imports, Variable Library, AKV token, helpers, schemas
 # - Step 1: Extract Repositories (full refresh)
@@ -24,17 +22,9 @@
 # - Step 4: Load Commits (MERGE on sha)
 # - Step 5: Update Watermarks
 # - Step 6: Verification
-#
 # This notebook is dynamic: DEV/TEST/PROD are driven by the Variable
 # Library `DE002_Variables`. Secrets come from Azure Key Vault.
-#
-# **Pre-requisites:**
-# 1. Fine-grained GitHub PAT with `repo` (read) and `read:org` scopes
-# 2. PAT stored in Azure Key Vault; Fabric workspace identity has
-#    `Key Vault Secrets User`
-# 3. Variable Library `DE002_Variables` with: `BRONZE_LH_NAME`,
-#    `LH_WORKSPACE_NAME`, `AKV_URL`, `AKV_SECRET_NAME`, `GITHUB_ORG`,
-#    `GITHUB_API_VERSION`
+
 
 # MARKDOWN ********************
 
@@ -66,6 +56,11 @@ from delta.tables import DeltaTable
 # META   "language_group": "synapse_pyspark"
 # META }
 
+# MARKDOWN ********************
+
+# #### Load Variable Library and contruct paths
+# The variable library makes this notebook environment-agnostic. All configuration values ...
+
 # CELL ********************
 
 variables = notebookutils.variableLibrary.getLibrary("DE002_Variables")
@@ -77,11 +72,11 @@ AKV_SECRET_NAME = variables.AKV_SECRET_NAME
 GITHUB_ORG = variables.GITHUB_ORG
 GITHUB_API_VERSION = variables.GITHUB_API_VERSION
 
-BRONZE_BASE_PATH = (
+ABFS_BASE_PATH = (
     f"abfss://{LH_WORKSPACE_NAME}@onelake.dfs.fabric.microsoft.com/"
-    f"{BRONZE_LH_NAME}.Lakehouse/Tables/"
+    f"{BRONZE_LH_NAME}.Lakehouse/Tables/dbo/"
 )
-
+'''
 GITHUB_SCHEMA = "github"
 META_SCHEMA = "meta"
 
@@ -95,12 +90,12 @@ WATERMARKS_PATH = f"{BRONZE_BASE_PATH}{META_SCHEMA}/{WATERMARKS_TABLE}"
 
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {GITHUB_SCHEMA}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {META_SCHEMA}")
+'''
+print(f"Github org:           {GITHUB_ORG}")
+print(f"Bronze base:   {ABFS_BASE_PATH}")
 
-print(f"Org:           {GITHUB_ORG}")
-print(f"Bronze base:   {BRONZE_BASE_PATH}")
-print(f"Repos path:    {REPOS_PATH}")
-print(f"Commits path:  {COMMITS_PATH}")
-print(f"Watermarks:    {WATERMARKS_PATH}")
+
+
 
 # METADATA ********************
 
@@ -131,20 +126,26 @@ print("GitHub token retrieved from Key Vault.")
 # META   "language_group": "synapse_pyspark"
 # META }
 
+# MARKDOWN ********************
+
+# #### Metadata-driven configuration and schemas
+# Using a metadata dict makes it easy to add new entities int the future without changing 
+# the core extration logic
+
 # CELL ********************
 
+
+
 ENTITIES = {
-    "repositories": {
-        "table": REPOS_TABLE,
-        "path": REPOS_PATH,
+    "gh_repositories": {
+        "endpoint": f"https://api.github.com/users/{GITHUB_ORG}/repos",
         "merge_key": "id",
-        "load_strategy": "full_refresh",
+        "write_path": f"{ABFS_BASE_PATH}gh_repositories",
     },
-    "commits": {
-        "table": COMMITS_TABLE,
-        "path": COMMITS_PATH,
+    "gh_commits": {
+        "endpoint_template": "https://api.github.com/repos/{owner}/{repo}/commits",  # ← endret
         "merge_key": "sha",
-        "load_strategy": "incremental",
+        "write_path": f"{ABFS_BASE_PATH}gh_commits",
     },
 }
 
@@ -206,9 +207,12 @@ WATERMARK_SCHEMA = StructType([
 # META   "language_group": "synapse_pyspark"
 # META }
 
+# MARKDOWN ********************
+
+# #### Helper functions
+
 # CELL ********************
 
-GITHUB_API = "https://api.github.com"
 
 
 def build_headers(token: str) -> dict:
@@ -224,7 +228,7 @@ def build_headers(token: str) -> dict:
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        "User-Agent": "fabric-de002-github-extraction",
+
     }
 
 
@@ -349,71 +353,88 @@ def flatten_commit(commit: dict, repo_full_name: str, extracted_at: datetime) ->
     }
 
 
-def merge_to_delta(df, path: str, merge_key: str, table_fqn: str) -> None:
-    """Create the Delta table on first write or MERGE on re-runs.
+def merge_to_delta(df, path: str, merge_key: str):
+    """Write a DataFrame to a Delta table using MERGE for idempotency.
 
-    Uses `spark.sql(""" ... """)` MERGE syntax against a temp view of
-    the source DataFrame. Target table is registered at `table_fqn` so
-    SQL can reference it by name.
+    If the table does not yet exist, performs an initial write.
+    If the table exists, merges on the specified key.
 
     Args:
-        df: Source Spark DataFrame.
-        path: ABFS location of the Delta table.
-        merge_key: Column name used in the MERGE predicate.
-        table_fqn: Fully-qualified target name, e.g. `github.gh_repositories`.
+        df: Spark DataFrame to write.
+        path: Full ABFS path to the Delta table.
+        merge_key: Column name to match on for upsert.
     """
-    if not DeltaTable.isDeltaTable(spark, path):
-        df.write.format("delta").save(path)
-        spark.sql(
-            f"CREATE TABLE IF NOT EXISTS {table_fqn} USING DELTA LOCATION '{path}'"
+    if DeltaTable.isDeltaTable(spark, path):
+        delta_table = DeltaTable.forPath(spark, path)
+        (
+            delta_table.alias("target")
+            .merge(df.alias("source"), f"target.{merge_key} = source.{merge_key}")
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
         )
-        print(f"Initial write: {table_fqn} ({df.count()} rows)")
-        return
+    
+        print (f" MERGE complete into {path} ({df.count()} source rows)")
+    else:
+        df.write.format("delta").save(path)
+        print(f" Initial write to {path} ({df.count()} rows)")
 
-    spark.sql(
-        f"CREATE TABLE IF NOT EXISTS {table_fqn} USING DELTA LOCATION '{path}'"
-    )
-    view = f"src_{merge_key}_{abs(hash(table_fqn))}"
-    df.createOrReplaceTempView(view)
+
+def get_watermark(entity_name: str) -> str:
+    """Read the last loaded timestamp for an entity from the meta._load_watermarks table.
+    Args:
+    entity_name: The entity identifier (e.g. "commits").
+    Returns:
+ 
+    str: ISO 8601 timestamp string, or None if no watermark exists.
+    """ 
+    try:
+        df = spark.sql(f"""
+            SELECT last_loaded_at
+            FROM `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks
+            WHERE entity_name = '{entity_name}'
+        """)
+        row = df.first()
+        if row:
+            return row["last_loaded_at"]
+    except Exception:
+        pass
+    return None
+
+def set_watermark(entity_name: str, last_loaded_at: str) -> None:
+    """Write or update the watermark for an entity in the meta schema.
+    
+    Creates the meta schema and _load_watermarks table if they do not exist, 
+    then performs a MERGE to upsert the watermark row.
+
+    Args:
+        entity_name: The entity identifier (e.g. "commits"). 
+        last_loaded_at: ISO 8601 timestamp to record.
+    """
+
     spark.sql(f"""
-        MERGE INTO {table_fqn} AS t
-        USING {view} AS s
-        ON t.{merge_key} = s.{merge_key}
+        CREATE TABLE IF NOT EXISTS `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks (
+            entity_name STRING NOT NULL, 
+            last_loaded_at STRING NOT NULL, 
+            _updated_at STRING NOT NULL
+        )
+        USING DELTA
+    """)
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    spark.sql(f"""
+        MERGE INTO `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks AS target
+        USING (
+            SELECT '{entity_name}' AS entity_name, 
+                   '{last_loaded_at}' AS last_loaded_at,
+                   '{now}' AS _updated_at
+        ) AS source
+        ON target.entity_name = source.entity_name
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
     """)
-    print(f"MERGE into {table_fqn} complete ({df.count()} source rows).")
-
-
-def get_watermark(entity: str):
-    """Return `last_loaded_at` ISO string for entity, or None if unset."""
-    if not DeltaTable.isDeltaTable(spark, WATERMARKS_PATH):
-        return None
-    spark.sql(
-        f"CREATE TABLE IF NOT EXISTS {META_SCHEMA}.{WATERMARKS_TABLE} "
-        f"USING DELTA LOCATION '{WATERMARKS_PATH}'"
-    )
-    row = spark.sql(f"""
-        SELECT last_loaded_at
-        FROM {META_SCHEMA}.{WATERMARKS_TABLE}
-        WHERE entity_name = '{entity}'
-    """).collect()
-    return row[0]["last_loaded_at"] if row else None
-
-
-def set_watermark(entity: str, last_loaded_at: str) -> None:
-    """Upsert a watermark row for `entity`."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    df = spark.createDataFrame(
-        [Row(entity_name=entity, last_loaded_at=last_loaded_at, _updated_at=now)],
-        schema=WATERMARK_SCHEMA,
-    )
-    merge_to_delta(
-        df,
-        WATERMARKS_PATH,
-        "entity_name",
-        f"{META_SCHEMA}.{WATERMARKS_TABLE}",
-    )
+    print(f"Watermark updated: {entity_name} -> {last_loaded_at}")
 
 # METADATA ********************
 
@@ -425,21 +446,15 @@ def set_watermark(entity: str, last_loaded_at: str) -> None:
 # MARKDOWN ********************
 
 # #### Step 1: Extract Repositories
-#
 # Full refresh. Org repo list is small and fields like stars and forks
 # drift over time, so every run pulls the full list.
 
 # CELL ********************
 
-repos_extracted_at = datetime.now(timezone.utc).replace(tzinfo=None)
-
-raw_repos = fetch_paginated(
-    f"{GITHUB_API}/orgs/{GITHUB_ORG}/repos",
-    params={"type": "all", "sort": "updated", "direction": "desc"},
-)
-print(f"Fetched {len(raw_repos)} repositories from org '{GITHUB_ORG}'.")
-
-repo_rows = [flatten_repo(r, repos_extracted_at) for r in raw_repos]
+extraction_timestamp = datetime.now(timezone.utc)
+raw_repos = fetch_paginated (ENTITIES ["gh_repositories"]["endpoint"]) 
+print (f"Extracted {len (raw_repos)} repositories from {GITHUB_ORG}")
+repo_rows = [flatten_repo(r, extraction_timestamp) for r in raw_repos]
 
 # METADATA ********************
 
@@ -448,18 +463,29 @@ repo_rows = [flatten_repo(r, repos_extracted_at) for r in raw_repos]
 # META   "language_group": "synapse_pyspark"
 # META }
 
-# MARKDOWN ********************
+# CELL ********************
 
-# #### Step 2: Load Repositories
+#### Step 2: Load Repositories into Bronze Lakehouse
+We create a Spark Data frame from the flattened repository data and MERGE it into the gh_repositories Delta table. The merge key is the
+GitHub Repo id which is immutable
+Existing rows are updated, new repos are inserted
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
 
 # CELL ********************
 
-repos_df = spark.createDataFrame(repo_rows, schema=REPO_SCHEMA)
+df_repos = spark.createDataFrame (repo_rows, schema=REPO_SCHEMA)
+display(df_repos)
+
 merge_to_delta(
-    repos_df,
-    REPOS_PATH,
-    merge_key="id",
-    table_fqn=f"{GITHUB_SCHEMA}.{REPOS_TABLE}",
+    df_repos,
+    ENTITIES["gh_repositories"]["write_path"], 
+    ENTITIES["gh_repositories"]["merge_key"],
 )
 
 # METADATA ********************
@@ -472,15 +498,11 @@ merge_to_delta(
 # MARKDOWN ********************
 
 # #### Step 3: Extract Commits (incremental)
-#
 # Reads the `commits` watermark. Fetches each repo's commits with
 # `since={watermark}`; empty repos return 409 and are skipped. First
 # run (no watermark) pulls full history bounded by the API.
 
 # CELL ********************
-
-commits_extracted_at = datetime.now(timezone.utc).replace(tzinfo=None)
-run_start_iso = commits_extracted_at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 watermark = get_watermark("commits")
 if watermark:
@@ -488,35 +510,39 @@ if watermark:
 else:
     print("No watermark found. Fetching full commit history for each repo.")
 
-commit_rows = []
-skipped_empty = 0
-for r in raw_repos:
-    repo_full_name = r["full_name"]
-    url = f"{GITHUB_API}/repos/{repo_full_name}/commits"
+repo_names = [r["full_name"] for r in repo_rows]
+
+all_commit_rows = []
+errors = []
+
+for idx, repo_full_name in enumerate(repo_names):
+    owner, repo = repo_full_name.split("/")
+    url = ENTITIES["gh_commits"]["endpoint_template"].format(owner=owner, repo=repo)
+
     params = {}
     if watermark:
         params["since"] = watermark
+
     try:
         raw_commits = fetch_paginated(url, params=params)
-    except requests.HTTPError as e:
-        if e.response is not None and e.response.status_code == 409:
-            skipped_empty += 1
-            continue
-        raise
-    except RuntimeError as e:
-        if "409" in str(e):
-            skipped_empty += 1
-            continue
-        raise
-    for c in raw_commits:
-        commit_rows.append(
-            flatten_commit(c, repo_full_name, commits_extracted_at)
-        )
+        commit_rows = [flatten_commit(c, repo_full_name, extraction_timestamp) for c in raw_commits]
+        all_commit_rows.extend(commit_rows)
 
-print(
-    f"Fetched {len(commit_rows)} commits across {len(raw_repos) - skipped_empty} "
-    f"repos (skipped {skipped_empty} empty)."
-)
+        if (idx + 1) % 10 == 0 or (idx + 1) == len(repo_names):
+            print(f"Progress: {idx + 1}/{len(repo_names)} repos processed, {len(all_commit_rows)} commits so far.")
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 409:
+            pass  # Tom/utilgjengelig repo, ignorer
+        else:
+            errors.append({"repo": repo_full_name, "error": str(e)})
+            print(f"WARNING: Error fetching commits for {repo_full_name}: {e}")
+
+print(f"\nExtraction complete: {len(all_commit_rows)} commits from {len(repo_names)} repos.")
+if errors:
+    print(f"Errors encountered: {len(errors)}")
+    for err in errors:
+        print(f"  - {err['repo']}: {err['error']}")
 
 # METADATA ********************
 
@@ -531,13 +557,14 @@ print(
 
 # CELL ********************
 
-if commit_rows:
-    commits_df = spark.createDataFrame(commit_rows, schema=COMMIT_SCHEMA)
+if all_commit_rows:
+    df_commits = spark.createDataFrame(all_commit_rows, schema=COMMIT_SCHEMA)
+    display(df_commits)
+
     merge_to_delta(
-        commits_df,
-        COMMITS_PATH,
-        merge_key="sha",
-        table_fqn=f"{GITHUB_SCHEMA}.{COMMITS_TABLE}",
+        df_commits,
+        ENTITIES["gh_commits"]["write_path"],
+        ENTITIES["gh_commits"]["merge_key"],
     )
 else:
     print("No new commits to load.")
@@ -552,13 +579,13 @@ else:
 # MARKDOWN ********************
 
 # #### Step 5: Update Watermarks
-#
 # Advance the `commits` watermark only if Step 4 succeeded.
 
 # CELL ********************
 
-set_watermark("commits", run_start_iso)
-print(f"Watermark 'commits' set to {run_start_iso}.")
+new_watermark = extraction_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+set_watermark("commits", new_watermark)
+print(f"Watermark 'commits' set to {new_watermark}.")
 
 # METADATA ********************
 
@@ -573,28 +600,35 @@ print(f"Watermark 'commits' set to {run_start_iso}.")
 
 # CELL ********************
 
-print("Row counts:")
-spark.sql(f"SELECT COUNT(*) AS n FROM {GITHUB_SCHEMA}.{REPOS_TABLE}").show()
-spark.sql(f"SELECT COUNT(*) AS n FROM {GITHUB_SCHEMA}.{COMMITS_TABLE}").show()
 
-print("Sample repositories:")
-spark.sql(f"""
-    SELECT full_name, language, stargazers_count, forks_count, updated_at
-    FROM {GITHUB_SCHEMA}.{REPOS_TABLE}
-    ORDER BY stargazers_count DESC
-    LIMIT 10
-""").show(truncate=False)
+repos_path = ENTITIES["gh_repositories"]["write_path"] 
+if DeltaTable.isDeltaTable(spark, repos_path):
+    df_verify_repos = spark.read.format("delta").load(repos_path)
+    repo_count = df_verify_repos.count()
 
-print("Sample commits:")
-spark.sql(f"""
-    SELECT repo_full_name, author_login, author_date, substr(message, 1, 80) AS msg
-    FROM {GITHUB_SCHEMA}.{COMMITS_TABLE}
-    ORDER BY author_date DESC
-    LIMIT 10
-""").show(truncate=False)
+    print (f"gh_repositories: {repo_count} rows") 
+    display(df_verify_repos.limit(5))
+else:
+    print("WARNING: gh_repositories table does not exist!")
 
-print("Watermarks:")
-spark.sql(f"SELECT * FROM {META_SCHEMA}.{WATERMARKS_TABLE}").show(truncate=False)
+commits_path=ENTITIES["gh_commits"]["write_path"]
+if DeltaTable.isDeltaTable(spark, commits_path):
+    df_verify_commits = spark.read.format("delta").load(commits_path)
+    commit_count = df_verify_commits.count()
+    print (f"gh_commits: {commit_count} rows")
+    display(df_verify_commits.limit(5))
+else:
+    print("WARNING: gh_commits table does not exist!")
+try:
+    df_watermarks = spark.sql(f"""
+    SELECT * FROM `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks
+    """)
+    print("\nLoad watermarks: ")
+    display (df_watermarks)
+except Exception:
+    print("WARNING: meta._load_watermarks table does not exist!")
+    
+print("\nExtraction pipeline complete.")
 
 # METADATA ********************
 

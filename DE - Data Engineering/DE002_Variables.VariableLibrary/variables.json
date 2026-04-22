@@ -1,0 +1,41 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/variables/1.0.0/schema.json",
+  "variables": [
+    {
+      "name": "BRONZE_LH_NAME",
+      "note": "",
+      "type": "String",
+      "value": "DE002_Lakehouse"
+    },
+    {
+      "name": "LH_WORKSPACE_NAME",
+      "note": "",
+      "type": "String",
+      "value": "aiw-general"
+    },
+    {
+      "name": "AKV_URL",
+      "note": "",
+      "type": "String",
+      "value": "https://kv-fabric-aiw-gf-dev.vault.azure.net/"
+    },
+    {
+      "name": "AKV_SECRET_NAME",
+      "note": "",
+      "type": "String",
+      "value": "githubpat"
+    },
+    {
+      "name": "GITHUB_ORG",
+      "note": "",
+      "type": "String",
+      "value": "gforsmo"
+    },
+    {
+      "name": "GITHUB_API_VERSION",
+      "note": "",
+      "type": "String",
+      "value": "2022-11-28"
+    }
+  ]
+}

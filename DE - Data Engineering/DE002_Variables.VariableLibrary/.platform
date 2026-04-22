@@ -1,11 +1,11 @@
 {
   "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
   "metadata": {
-    "type": "Notebook",
-    "displayName": "DE002_GitHubExtraction"
+    "type": "VariableLibrary",
+    "displayName": "DE002_Variables"
   },
   "config": {
     "version": "2.0",
-    "logicalId": "1d6fd95c-c5f0-4969-8531-c0965b133859"
+    "logicalId": "a1fbe10b-efe7-a8a3-487a-e7d43a7c467a"
   }
 }
