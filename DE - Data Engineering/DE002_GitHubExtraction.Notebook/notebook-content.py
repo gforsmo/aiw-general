@@ -79,6 +79,7 @@ ABFS_BASE_PATH = (
 
 print(f"Github org:           {GITHUB_ORG}")
 print(f"Bronze base:   {ABFS_BASE_PATH}")
+print(f"workspace:   {LH_WORKSPACE_NAME}")
 
 
 
@@ -400,19 +401,21 @@ def set_watermark(entity_name: str, last_loaded_at: str) -> None:
 
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS `{LH_WORKSPACE_NAME}`.{BRONZE_LH_NAME}.meta._load_watermarks (
-            entity_name STRING NOT NULL,
-            last_loaded_at STRING NOT NULL,
-            _updated_at TIMESTAMP NOT NULL
+            entity_name STRING NOT NULL, 
+            last_loaded_at STRING NOT NULL, 
+            _updated_at STRING NOT NULL
         )
         USING DELTA
     """)
 
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     spark.sql(f"""
         MERGE INTO `{LH_WORKSPACE_NAME}`.{BRONZE_LH_NAME}.meta._load_watermarks AS target
         USING (
-            SELECT '{entity_name}' AS entity_name,
+            SELECT '{entity_name}' AS entity_name, 
                    '{last_loaded_at}' AS last_loaded_at,
-                   current_timestamp() AS _updated_at
+                   '{now}' AS _updated_at
         ) AS source
         ON target.entity_name = source.entity_name
         WHEN MATCHED THEN UPDATE SET *
@@ -481,7 +484,7 @@ merge_to_delta(
 
 # CELL ********************
 
-watermark = get_watermark("gh_commits")
+watermark = get_watermark("commits")
 if watermark:
     print(f"Incremental mode. Fetching commits since {watermark}.")
 else:

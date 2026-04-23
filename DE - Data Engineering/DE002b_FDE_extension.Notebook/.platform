@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "DE002b_FDE_extension",
+    "description": "DE002b_FDE_extension"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "4bbbd43f-e8dd-8438-4431-a38b0edc0854"
+  }
+}
