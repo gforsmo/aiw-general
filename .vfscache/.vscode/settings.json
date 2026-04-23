@@ -1,6 +1,0 @@
-{
-  "python.analysis.stubPath": "\\\\Mac\\Home\\Documents\\GitHub\\aiw-general\\.stubs\\pyspark34",
-  "python.analysis.diagnosticSeverityOverrides": {
-    "reportMissingModuleSource": "none"
-  }
-}
