@@ -377,7 +377,7 @@ def get_watermark(entity_name: str) -> str:
     try:
         df = spark.sql(f"""
             SELECT last_loaded_at
-            FROM `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks
+            FROM `{LH_WORKSPACE_NAME}`.{BRONZE_LH_NAME}.meta._load_watermarks
             WHERE entity_name = '{entity_name}'
         """)
         row = df.first()
@@ -399,22 +399,20 @@ def set_watermark(entity_name: str, last_loaded_at: str) -> None:
     """
 
     spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks (
-            entity_name STRING NOT NULL, 
-            last_loaded_at STRING NOT NULL, 
-            _updated_at STRING NOT NULL
+        CREATE TABLE IF NOT EXISTS `{LH_WORKSPACE_NAME}`.{BRONZE_LH_NAME}.meta._load_watermarks (
+            entity_name STRING NOT NULL,
+            last_loaded_at STRING NOT NULL,
+            _updated_at TIMESTAMP NOT NULL
         )
         USING DELTA
     """)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
     spark.sql(f"""
-        MERGE INTO `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks AS target
+        MERGE INTO `{LH_WORKSPACE_NAME}`.{BRONZE_LH_NAME}.meta._load_watermarks AS target
         USING (
-            SELECT '{entity_name}' AS entity_name, 
+            SELECT '{entity_name}' AS entity_name,
                    '{last_loaded_at}' AS last_loaded_at,
-                   '{now}' AS _updated_at
+                   current_timestamp() AS _updated_at
         ) AS source
         ON target.entity_name = source.entity_name
         WHEN MATCHED THEN UPDATE SET *
@@ -483,7 +481,7 @@ merge_to_delta(
 
 # CELL ********************
 
-watermark = get_watermark("commits")
+watermark = get_watermark("gh_commits")
 if watermark:
     print(f"Incremental mode. Fetching commits since {watermark}.")
 else:
@@ -600,7 +598,7 @@ else:
     print("WARNING: gh_commits table does not exist!")
 try:
     df_watermarks = spark.sql(f"""
-    SELECT * FROM `aiw-general`.{BRONZE_LH_NAME}.meta._load_watermarks
+    SELECT * FROM `{LH_WORKSPACE_NAME}`.{BRONZE_LH_NAME}.meta._load_watermarks
     """)
     print("\nLoad watermarks: ")
     display (df_watermarks)
